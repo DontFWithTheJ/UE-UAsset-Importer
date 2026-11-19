@@ -195,6 +195,19 @@ void SUAssetImporterDialog::Construct(const FArguments& InArgs)
                     .Text(LOCTEXT("AssetsHeading", "Assets to Import"))
                     .Font(FAppStyle::Get().GetFontStyle(TEXT("HeadingSmall")))
                 ]
+                + SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 8, 0)
+                [
+                    SNew(SButton)
+                    .Text(LOCTEXT("LoadPreviews", "Load selected previews"))
+                    .ToolTipText(LOCTEXT("LoadPreviewsTip", "Load the selected source packages and their dependencies to render live thumbnails."))
+                    .IsEnabled_Lambda([this]() { return Service.IsValid() && GetSelectedCount() > 0; })
+                    .OnClicked_Lambda([this]()
+                    {
+                        Service->LoadSelectedPreviews(Items);
+                        RefreshAssetRows();
+                        return FReply::Handled();
+                    })
+                ]
                 + SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
                 [
                     SNew(STextBlock)
@@ -447,12 +460,18 @@ void SUAssetImporterDialog::Construct(const FArguments& InArgs)
         ]
     ];
 
+    RefreshAssetRows();
+    RebuildDependencyTree();
+}
+
+void SUAssetImporterDialog::RefreshAssetRows()
+{
+    AssetList->ClearChildren();
+    PreviewBrushes.Reset();
     for (const TSharedPtr<FUAssetImporterAssetItem>& Item : Items)
     {
         AssetList->AddSlot().Padding(0.0f, 0.0f, 0.0f, 5.0f)[MakeAssetRow(Item)];
     }
-
-    RebuildDependencyTree();
 }
 
 const FUAssetImporterResult& SUAssetImporterDialog::GetImportResult() const
@@ -840,7 +859,7 @@ void SUAssetImporterDialog::OpenDestinationPicker()
     PathPickerConfig.DefaultPath = SelectedPath.IsEmpty() ? TEXT("/Game") : SelectedPath;
     PathPickerConfig.bAllowClassesFolder = false;
     PathPickerConfig.bAllowReadOnlyFolders = false;
-    PathPickerConfig.bOnPathSelectedPassesVirtualPaths = true;
+    PathPickerConfig.bOnPathSelectedPassesVirtualPaths = false;
     PathPickerConfig.bNotifyDefaultPathSelected = false;
     PathPickerConfig.OnPathSelected = FOnPathSelected::CreateLambda([&SelectedPath](const FString& Path) { SelectedPath = Path; });
 
@@ -866,6 +885,7 @@ void SUAssetImporterDialog::OpenDestinationPicker()
                 + SHorizontalBox::Slot().AutoWidth()
                 [
                     SNew(SButton).ButtonStyle(FAppStyle::Get(), TEXT("PrimaryButton"))
+                    .IsEnabled_Lambda([&SelectedPath]() { return FPackageName::IsValidLongPackageName(SelectedPath, true); })
                     .Text(LOCTEXT("DestinationPickerUse", "Use Selected Folder"))
                     .OnClicked_Lambda([&PickerWindow, &SelectedPath, &bAccepted]()
                     {

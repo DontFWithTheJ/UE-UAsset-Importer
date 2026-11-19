@@ -147,13 +147,12 @@ bool FUAssetImporterModule::HandleExternalFileDragOver(
 
     for (const FString& FilePath : ExternalOperation->GetFiles())
     {
-        if (UAssetImporterModulePrivate::IsUAssetFile(FilePath))
+        if (!UAssetImporterModulePrivate::IsUAssetFile(FilePath))
         {
-            return true;
+            return false;
         }
     }
-
-    return false;
+    return true;
 }
 
 bool FUAssetImporterModule::HandleExternalFileDrop(
@@ -169,6 +168,11 @@ bool FUAssetImporterModule::HandleExternalFileDrop(
         StaticCastSharedPtr<FExternalDragOperation>(Payload.DragDropOp);
 
     if (!ExternalOperation.IsValid() || !ExternalOperation->HasFiles())
+    {
+        return false;
+    }
+
+    if (!HandleExternalFileDragOver(Payload))
     {
         return false;
     }
@@ -197,12 +201,12 @@ bool FUAssetImporterModule::HandleExternalFileDrop(
         UAssetFiles.Num()
     );
 
-    OpenImportDialogForFiles(UAssetFiles);
+    OpenImportDialogForFiles(UAssetFiles, Payload.PackagePaths.IsEmpty() ? UAssetImporterModulePrivate::GetCurrentDestinationPath() : Payload.PackagePaths[0].ToString());
     return true;
 }
 
 void FUAssetImporterModule::OpenImportDialogForFiles(
-    const TArray<FString>& SelectedFiles)
+    const TArray<FString>& SelectedFiles, const FString& InitialDestinationPackagePath)
 {
     TSharedRef<FUAssetImporterService> Service =
         MakeShared<FUAssetImporterService>();
@@ -224,8 +228,6 @@ void FUAssetImporterModule::OpenImportDialogForFiles(
         return;
     }
 
-    const FString InitialDestinationPackagePath =
-        UAssetImporterModulePrivate::GetCurrentDestinationPath();
 
     TSharedRef<SWindow> Window = SNew(SWindow)
         .Title(LOCTEXT("ImportWindowTitle", "UAsset Importer"))

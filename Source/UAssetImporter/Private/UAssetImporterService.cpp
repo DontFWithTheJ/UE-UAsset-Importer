@@ -824,8 +824,16 @@ bool FUAssetImporterService::Prepare(
     };
 
     TSet<FString> VisitedPackages;
+    FScopedSlowTask ScanProgress(0.0f, NSLOCTEXT("UAssetImporter", "ScanMetadata", "Reading package dependencies..."));
+    ScanProgress.MakeDialogDelayed(0.5f, true);
     while (!PendingPackages.IsEmpty())
     {
+        ScanProgress.EnterProgressFrame(0.0f);
+        if (ScanProgress.ShouldCancel())
+        {
+            OutProblems.Add(TEXT("Import preparation canceled."));
+            return false;
+        }
         const FString TemporaryPackage = PendingPackages.Pop(EAllowShrinking::No);
         if (VisitedPackages.Contains(TemporaryPackage))
         {
@@ -887,150 +895,6 @@ bool FUAssetImporterService::Prepare(
             TEXT("Asset Registry metadata could not be read for %d dependency package(s). First: %s"),
             DependencyMetadataFailures.Num(), *DependencyMetadataFailures[0]);
     }
-
-    FLinkerInstancingContext PreviewRemapContext(true);
-for (const TPair<FString, FString>& Mapping : OriginalPackageToTemporaryPackage)
-{
-    PreviewRemapContext.AddPackageMapping(FName(*Mapping.Key), FName(*Mapping.Value));
-
-    const FString OriginalObjectPath =
-        Mapping.Key + TEXT(".") + FPackageName::GetShortName(Mapping.Key);
-
-    const FString TemporaryObjectPath =
-        Mapping.Value + TEXT(".") + FPackageName::GetShortName(Mapping.Value);
-
-    PreviewRemapContext.AddPathMapping(
-        FSoftObjectPath(OriginalObjectPath),
-        FSoftObjectPath(TemporaryObjectPath));
-}
-
-TSet<FString> SelectedTemporaryPackages;
-
-for (const FString& SelectedFile : NormalizedSelectedFiles)
-{
-    for (const FSourceRoot& Root : SourceRoots)
-    {
-        if (!SelectedFile.StartsWith(
-            UAssetImporterPrivate::EnsureTrailingSlash(Root.ContentRoot),
-            ESearchCase::IgnoreCase))
-        {
-            continue;
-        }
-
-        const FString TemporaryPackage = MakeTemporaryPackageName(Root, SelectedFile);
-
-        if (const FAssetData* AssetData = AssetDataByTemporaryPackage.Find(TemporaryPackage))
-        {
-            const FString AssetClass =
-                AssetData->AssetClassPath.GetAssetName().ToString();
-
-            if (!AssetClass.StartsWith(TEXT("Niagara"), ESearchCase::IgnoreCase))
-            {
-                SelectedTemporaryPackages.Add(TemporaryPackage);
-            }
-        }
-
-        break;
-    }
-}
-
-TArray<FString> OrderedPreviewDependencyPackages;
-TSet<FString> PreviewPackagesVisited;
-TSet<FString> PreviewPackagesBeingVisited;
-
-TFunction<void(const FString&)> VisitPreviewPackage;
-
-VisitPreviewPackage = [this, &AssetRegistry, &SelectedTemporaryPackages,
-    &OrderedPreviewDependencyPackages, &PreviewPackagesVisited,
-    &PreviewPackagesBeingVisited, &VisitPreviewPackage](const FString& PackageName)
-{
-    if (PackageName.IsEmpty()
-        || PreviewPackagesVisited.Contains(PackageName)
-        || PreviewPackagesBeingVisited.Contains(PackageName))
-    {
-        return;
-    }
-
-    PreviewPackagesBeingVisited.Add(PackageName);
-
-    TArray<FName> PackageDependencies;
-
-    UE::AssetRegistry::FDependencyQuery HardQuery;
-    HardQuery.Required = UE::AssetRegistry::EDependencyProperty::Hard;
-
-    AssetRegistry.GetDependencies(
-        FName(*PackageName),
-        PackageDependencies,
-        UE::AssetRegistry::EDependencyCategory::Package,
-        HardQuery);
-
-    TArray<FName> SoftDependencies;
-
-    UE::AssetRegistry::FDependencyQuery SoftQuery;
-    SoftQuery.Excluded = UE::AssetRegistry::EDependencyProperty::Hard;
-
-    AssetRegistry.GetDependencies(
-        FName(*PackageName),
-        SoftDependencies,
-        UE::AssetRegistry::EDependencyCategory::Package,
-        SoftQuery);
-
-    PackageDependencies.Append(SoftDependencies);
-
-    for (const FName& DependencyName : PackageDependencies)
-    {
-        const FString DependencyPackage =
-            UAssetImporterPrivate::NormalizePackageName(DependencyName.ToString());
-
-        if (DependencyPackage.IsEmpty()
-            || UAssetImporterPrivate::IsNativeOrEnginePackage(DependencyPackage))
-        {
-            continue;
-        }
-
-        const FString TemporaryDependency =
-            FindTemporaryPackageForPackage(DependencyPackage);
-
-        if (!TemporaryDependency.IsEmpty()
-            && TemporaryPackageToFile.Contains(TemporaryDependency))
-        {
-            VisitPreviewPackage(TemporaryDependency);
-        }
-    }
-
-    PreviewPackagesBeingVisited.Remove(PackageName);
-    PreviewPackagesVisited.Add(PackageName);
-
-    if (!SelectedTemporaryPackages.Contains(PackageName))
-    {
-        OrderedPreviewDependencyPackages.AddUnique(PackageName);
-    }
-};
-
-for (const FString& SelectedPackageName : SelectedTemporaryPackages)
-{
-    VisitPreviewPackage(SelectedPackageName);
-}
-
-TArray<FString> PreviewDependencyLoadFailures;
-
-for (const FString& DependencyPackageName : OrderedPreviewDependencyPackages)
-{
-    if (FindPackage(nullptr, *DependencyPackageName))
-    {
-        continue;
-    }
-
-    if (!LoadPackage(
-        nullptr,
-        *DependencyPackageName,
-        LOAD_None,
-        nullptr,
-        &PreviewRemapContext))
-    {
-        PreviewDependencyLoadFailures.AddUnique(DependencyPackageName);
-    }
-}
 
 for (const FString& SelectedFile : NormalizedSelectedFiles)
 {
@@ -1103,129 +967,242 @@ for (const FString& SelectedFile : NormalizedSelectedFiles)
     OutItems.Add(Item);
 }
 
-int32 RenderedPreviewCount = 0;
-TArray<FString> PreviewRenderFailures;
+    return OutProblems.IsEmpty() && !OutItems.IsEmpty();
+}
 
-for (const TSharedPtr<FUAssetImporterAssetItem>& Item : OutItems)
+void FUAssetImporterService::LoadSelectedPreviews(const TArray<TSharedPtr<FUAssetImporterAssetItem>>& Items)
 {
-    if (!Item.IsValid()
-        || Item->PreviewTexture.IsValid()
-        || !Item->bMetadataValid
-        || Item->AssetClass.StartsWith(TEXT("Niagara"), ESearchCase::IgnoreCase))
+    IAssetRegistry& AssetRegistry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).Get();
+    FLinkerInstancingContext PreviewRemapContext(true);
+    for (const TPair<FString, FString>& Mapping : OriginalPackageToTemporaryPackage)
     {
-        if (Item.IsValid() && Item->PreviewTexture.IsValid())
-        {
-            ++RenderedPreviewCount;
-        }
-        continue;
+        PreviewRemapContext.AddPackageMapping(FName(*Mapping.Key), FName(*Mapping.Value));
+
+        const FString OriginalObjectPath =
+            Mapping.Key + TEXT(".") + FPackageName::GetShortName(Mapping.Key);
+
+        const FString TemporaryObjectPath =
+            Mapping.Value + TEXT(".") + FPackageName::GetShortName(Mapping.Value);
+
+        PreviewRemapContext.AddPathMapping(
+            FSoftObjectPath(OriginalObjectPath),
+            FSoftObjectPath(TemporaryObjectPath));
     }
 
-    UPackage* PreviewPackage = FindPackage(nullptr, *Item->TemporaryPackageName);
-    if (!PreviewPackage)
+    TSet<FString> SelectedTemporaryPackages;
+
+    for (const auto& Item : Items)
     {
-        PreviewPackage = LoadPackage(
+        if (Item.IsValid() && Item->bSelected && Item->bMetadataValid && !Item->AssetClass.StartsWith(TEXT("Niagara"), ESearchCase::IgnoreCase))
+        {
+            SelectedTemporaryPackages.Add(Item->TemporaryPackageName);
+        }
+    }
+
+    TArray<FString> OrderedPreviewDependencyPackages;
+    TSet<FString> PreviewPackagesVisited;
+    TSet<FString> PreviewPackagesBeingVisited;
+
+    TFunction<void(const FString&)> VisitPreviewPackage;
+
+    VisitPreviewPackage = [this, &AssetRegistry, &SelectedTemporaryPackages,
+        &OrderedPreviewDependencyPackages, &PreviewPackagesVisited,
+        &PreviewPackagesBeingVisited, &VisitPreviewPackage](const FString& PackageName)
+    {
+        if (PackageName.IsEmpty()
+            || PreviewPackagesVisited.Contains(PackageName)
+            || PreviewPackagesBeingVisited.Contains(PackageName))
+        {
+            return;
+        }
+
+        PreviewPackagesBeingVisited.Add(PackageName);
+
+        TArray<FName> PackageDependencies;
+
+        UE::AssetRegistry::FDependencyQuery HardQuery;
+        HardQuery.Required = UE::AssetRegistry::EDependencyProperty::Hard;
+
+        AssetRegistry.GetDependencies(
+            FName(*PackageName),
+            PackageDependencies,
+            UE::AssetRegistry::EDependencyCategory::Package,
+            HardQuery);
+
+        TArray<FName> SoftDependencies;
+
+        UE::AssetRegistry::FDependencyQuery SoftQuery;
+        SoftQuery.Excluded = UE::AssetRegistry::EDependencyProperty::Hard;
+
+        AssetRegistry.GetDependencies(
+            FName(*PackageName),
+            SoftDependencies,
+            UE::AssetRegistry::EDependencyCategory::Package,
+            SoftQuery);
+
+        PackageDependencies.Append(SoftDependencies);
+
+        for (const FName& DependencyName : PackageDependencies)
+        {
+            const FString DependencyPackage =
+                UAssetImporterPrivate::NormalizePackageName(DependencyName.ToString());
+
+            if (DependencyPackage.IsEmpty()
+                || UAssetImporterPrivate::IsNativeOrEnginePackage(DependencyPackage))
+            {
+                continue;
+            }
+
+            const FString TemporaryDependency =
+                FindTemporaryPackageForPackage(DependencyPackage);
+
+            if (!TemporaryDependency.IsEmpty()
+                && TemporaryPackageToFile.Contains(TemporaryDependency))
+            {
+                VisitPreviewPackage(TemporaryDependency);
+            }
+        }
+
+        PreviewPackagesBeingVisited.Remove(PackageName);
+        PreviewPackagesVisited.Add(PackageName);
+
+        if (!SelectedTemporaryPackages.Contains(PackageName))
+        {
+            OrderedPreviewDependencyPackages.AddUnique(PackageName);
+        }
+    };
+
+    for (const FString& SelectedPackageName : SelectedTemporaryPackages)
+    {
+        VisitPreviewPackage(SelectedPackageName);
+    }
+
+    TArray<FString> PreviewDependencyLoadFailures;
+
+    for (const FString& DependencyPackageName : OrderedPreviewDependencyPackages)
+    {
+        if (FindPackage(nullptr, *DependencyPackageName))
+        {
+            continue;
+        }
+
+        if (!LoadPackage(
             nullptr,
-            *Item->TemporaryPackageName,
+            *DependencyPackageName,
             LOAD_None,
             nullptr,
-            &PreviewRemapContext);
-    }
-
-    if (!PreviewPackage)
-    {
-        PreviewRenderFailures.AddUnique(
-            Item->AssetName + TEXT(" (package load failed)"));
-        continue;
-    }
-
-    UObject* PreviewObject = FindObject<UObject>(
-        PreviewPackage,
-        *Item->AssetName);
-
-    if (!PreviewObject)
-    {
-        PreviewRenderFailures.AddUnique(
-            Item->AssetName + TEXT(" (asset object not found in loaded package)"));
-        continue;
-    }
-
-    UE_LOG(
-        LogUAssetImporter,
-        Display,
-        TEXT("Rendering live preview: Asset='%s', Class='%s', Package='%s'."),
-        *PreviewObject->GetName(),
-        *PreviewObject->GetClass()->GetName(),
-        *PreviewPackage->GetName());
-
-    if (UStaticMesh* StaticMesh = Cast<UStaticMesh>(PreviewObject))
-    {
-        for (int32 MaterialIndex = 0;
-            MaterialIndex < StaticMesh->GetStaticMaterials().Num();
-            ++MaterialIndex)
+            &PreviewRemapContext))
         {
-            UMaterialInterface* Material = StaticMesh->GetMaterial(MaterialIndex);
+            PreviewDependencyLoadFailures.AddUnique(DependencyPackageName);
+        }
+    }
+    TArray<FString> PreviewRenderFailures;
 
-            UE_LOG(
-                LogUAssetImporter,
-                Display,
-                TEXT("Preview mesh material slot %d: Slot='%s', Material='%s'."),
-                MaterialIndex,
-                *StaticMesh->GetStaticMaterials()[MaterialIndex].MaterialSlotName.ToString(),
-                Material ? *Material->GetPathName() : TEXT("<null>"));
+    for (const TSharedPtr<FUAssetImporterAssetItem>& Item : Items)
+    {
+        if (!Item.IsValid()
+            || !Item->bSelected
+            || Item->PreviewTexture.IsValid()
+            || !Item->bMetadataValid
+            || Item->AssetClass.StartsWith(TEXT("Niagara"), ESearchCase::IgnoreCase))
+        {
+            continue;
+        }
+
+        UPackage* PreviewPackage = FindPackage(nullptr, *Item->TemporaryPackageName);
+        if (!PreviewPackage)
+        {
+            PreviewPackage = LoadPackage(
+                nullptr,
+                *Item->TemporaryPackageName,
+                LOAD_None,
+                nullptr,
+                &PreviewRemapContext);
+        }
+
+        if (!PreviewPackage)
+        {
+            PreviewRenderFailures.AddUnique(
+                Item->AssetName + TEXT(" (package load failed)"));
+            continue;
+        }
+
+        UObject* PreviewObject = FindObject<UObject>(
+            PreviewPackage,
+            *Item->AssetName);
+
+        if (!PreviewObject)
+        {
+            PreviewRenderFailures.AddUnique(
+                Item->AssetName + TEXT(" (asset object not found in loaded package)"));
+            continue;
+        }
+
+        UE_LOG(
+            LogUAssetImporter,
+            Display,
+            TEXT("Rendering live preview: Asset='%s', Class='%s', Package='%s'."),
+            *PreviewObject->GetName(),
+            *PreviewObject->GetClass()->GetName(),
+            *PreviewPackage->GetName());
+
+        if (UStaticMesh* StaticMesh = Cast<UStaticMesh>(PreviewObject))
+        {
+            for (int32 MaterialIndex = 0;
+                MaterialIndex < StaticMesh->GetStaticMaterials().Num();
+                ++MaterialIndex)
+            {
+                UMaterialInterface* Material = StaticMesh->GetMaterial(MaterialIndex);
+
+                UE_LOG(
+                    LogUAssetImporter,
+                    Display,
+                    TEXT("Preview mesh material slot %d: Slot='%s', Material='%s'."),
+                    MaterialIndex,
+                    *StaticMesh->GetStaticMaterials()[MaterialIndex].MaterialSlotName.ToString(),
+                    Material ? *Material->GetPathName() : TEXT("<null>"));
+            }
+        }
+
+        Item->PreviewTexture.Reset(
+            UAssetImporterPrivate::CreateRenderedPreviewTexture(PreviewObject));
+
+        if (Item->PreviewTexture.IsValid())
+        {
+
+
+            if (UTexture2D* SourceTexture = Cast<UTexture2D>(PreviewObject))
+            {
+                UE_LOG(
+                    LogUAssetImporter,
+                    Display,
+                    TEXT("Texture preview ready: Asset='%s', SourceSize=%dx%d, PreviewSize=%dx%d, SourcePixels=%s."),
+                    *SourceTexture->GetName(),
+                    SourceTexture->GetSizeX(),
+                    SourceTexture->GetSizeY(),
+                    Item->PreviewTexture->GetSizeX(),
+                    Item->PreviewTexture->GetSizeY(),
+                    SourceTexture->Source.IsValid() ? TEXT("available") : TEXT("unavailable"));
+            }
+        }
+        else
+        {
+            PreviewRenderFailures.AddUnique(
+                Item->AssetName + TEXT(" (thumbnail renderer returned no image)"));
         }
     }
 
-    Item->PreviewTexture.Reset(
-        UAssetImporterPrivate::CreateRenderedPreviewTexture(PreviewObject));
-
-    if (Item->PreviewTexture.IsValid())
+    if (!PreviewDependencyLoadFailures.IsEmpty() || !PreviewRenderFailures.IsEmpty())
     {
-        ++RenderedPreviewCount;
-
-        if (UTexture2D* SourceTexture = Cast<UTexture2D>(PreviewObject))
-        {
-            UE_LOG(
-                LogUAssetImporter,
-                Display,
-                TEXT("Texture preview ready: Asset='%s', SourceSize=%dx%d, PreviewSize=%dx%d, SourcePixels=%s."),
-                *SourceTexture->GetName(),
-                SourceTexture->GetSizeX(),
-                SourceTexture->GetSizeY(),
-                Item->PreviewTexture->GetSizeX(),
-                Item->PreviewTexture->GetSizeY(),
-                SourceTexture->Source.IsValid() ? TEXT("available") : TEXT("unavailable"));
-        }
+        UE_LOG(
+            LogUAssetImporter,
+            Warning,
+            TEXT("Live preview rendering incomplete: %d dependency package(s) failed to load and %d asset preview(s) failed to render. First dependency failure: %s. First preview failure: %s."),
+            PreviewDependencyLoadFailures.Num(),
+            PreviewRenderFailures.Num(),
+            PreviewDependencyLoadFailures.IsEmpty() ? TEXT("none") : *PreviewDependencyLoadFailures[0],
+            PreviewRenderFailures.IsEmpty() ? TEXT("none") : *PreviewRenderFailures[0]);
     }
-    else
-    {
-        PreviewRenderFailures.AddUnique(
-            Item->AssetName + TEXT(" (thumbnail renderer returned no image)"));
-    }
-}
-
-if (!PreviewDependencyLoadFailures.IsEmpty() || !PreviewRenderFailures.IsEmpty())
-{
-    UE_LOG(
-        LogUAssetImporter,
-        Warning,
-        TEXT("Live preview rendering incomplete: %d dependency package(s) failed to load and %d asset preview(s) failed to render. First dependency failure: %s. First preview failure: %s."),
-        PreviewDependencyLoadFailures.Num(),
-        PreviewRenderFailures.Num(),
-        PreviewDependencyLoadFailures.IsEmpty() ? TEXT("none") : *PreviewDependencyLoadFailures[0],
-        PreviewRenderFailures.IsEmpty() ? TEXT("none") : *PreviewRenderFailures[0]);
-}
-
-UE_LOG(
-    LogUAssetImporter,
-    Display,
-    TEXT("Source scan complete: %d selected asset(s), %d source root(s), %d dependency package mapping(s), %d dependency metadata failure(s), %d live-rendered preview(s)."),
-    OutItems.Num(),
-    SourceRoots.Num(),
-    OriginalPackageToTemporaryPackage.Num(),
-    DependencyMetadataFailures.Num(),
-    RenderedPreviewCount);
-    
-    return OutProblems.IsEmpty() && !OutItems.IsEmpty();
 }
 
 FUAssetImporterResult FUAssetImporterService::Import(
@@ -1250,7 +1227,7 @@ FUAssetImporterResult FUAssetImporterService::Import(
     const bool bRelocateDependencies = Options.DependencyPlacement != EUAssetImporterDependencyPlacement::KeepOriginalPaths;
 
     FScopedSlowTask ImportProgress(100.0f, FText::FromString(TEXT("Importing assets...")));
-    ImportProgress.MakeDialog(false);
+    ImportProgress.MakeDialog(Options.bRollbackOnFailure);
     float ReportedProgress = 0.0f;
     double LastProgressRefreshTime = FPlatformTime::Seconds();
     auto AdvanceProgress = [&ImportProgress, &ReportedProgress, &LastProgressRefreshTime](const float Amount, const FText& Message)
@@ -1832,6 +1809,13 @@ FUAssetImporterResult FUAssetImporterService::Import(
             CopyOperations.IsEmpty() ? 0.0f : 25.0f / static_cast<float>(CopyOperations.Num()),
             FText::FromString(FString::Printf(TEXT("Copying %s..."), *Operation.Asset.OriginalPackageName)));
 
+        if (ImportProgress.ShouldCancel())
+        {
+            Errors.Add(TEXT("Import canceled."));
+            bCopyFailed = true;
+            break;
+        }
+
         const TArray<FString> ExistingDestinationFiles = GetPackageFiles(Operation.DestinationBase);
         if (Options.bOverwriteExistingAssets && !ExistingDestinationFiles.IsEmpty() && Options.bRollbackOnFailure)
         {
@@ -1869,7 +1853,7 @@ FUAssetImporterResult FUAssetImporterService::Import(
         TSet<FString> SourceExtensions;
         for (const FString& SourcePackageFile : SourcePackageFiles)
         {
-            const FString Extension = FPaths::GetExtension(SourcePackageFile, true);
+            const FString Extension = SourcePackageFile.Mid(SourceBase.Len());
             SourceExtensions.Add(Extension.ToLower());
             const FString DestinationFile = Operation.DestinationBase + Extension;
             TouchedDestinationFiles.Add(DestinationFile);
@@ -1894,7 +1878,7 @@ FUAssetImporterResult FUAssetImporterService::Import(
         {
             for (const FString& ExistingFile : ExistingDestinationFiles)
             {
-                const FString Extension = FPaths::GetExtension(ExistingFile, true).ToLower();
+                const FString Extension = ExistingFile.Mid(Operation.DestinationBase.Len()).ToLower();
                 if (SourceExtensions.Contains(Extension))
                 {
                     continue;
@@ -2248,24 +2232,82 @@ FUAssetImporterResult FUAssetImporterService::Import(
         AdvanceProgress(45.0f, FText::FromString(TEXT("Finishing import...")));
     }
 
+    if (!bCopyFailed && ImportProgress.ShouldCancel())
+    {
+        Errors.Add(TEXT("Import canceled."));
+        bCopyFailed = true;
+    }
+    if (!bCopyFailed && Options.bClearImportSourceData)
+    {
+        TArray<FString> Problems;
+        if (SanitizeImportedPackages(Result.CopiedPackageNames, Result.CopiedPackageNames, Problems))
+        {
+            Warnings.Append(Problems);
+        }
+        else
+        {
+            Errors.Append(Problems);
+            bCopyFailed = true;
+        }
+    }
+
     if (bCopyFailed && Options.bRollbackOnFailure)
     {
+        TArray<UPackage*> LoadedPackages;
+        for (const FString& Name : Result.CopiedPackageNames)
+        {
+            if (UPackage* Package = FindPackage(nullptr, *Name))
+            {
+                LoadedPackages.AddUnique(Package);
+            }
+        }
+        if (!LoadedPackages.IsEmpty())
+        {
+            bool bUnloaded = false;
+            FText UnloadError;
+            UEditorLoadingAndSavingUtils::UnloadPackages(LoadedPackages, bUnloaded, UnloadError);
+            for (const FString& Name : Result.CopiedPackageNames)
+            {
+                if (FindPackage(nullptr, *Name))
+                {
+                    Errors.Add(FString::Printf(TEXT("Rollback paused because %s is still loaded. Recovery directory: %s"), *Name, *FPaths::ConvertRelativePathToFull(BackupRoot)));
+                    Result.Errors = Errors;
+                    Result.Warnings = Warnings;
+                    Result.ProblemCount = Errors.Num() + Warnings.Num();
+                    ReportIssues(Warnings, Errors, Result, Options.bShowProblemLog, Options.bLogSummary);
+                    return Result;
+                }
+            }
+        }
+        bool bRollbackComplete = true;
         for (const FString& DestinationFile : TouchedDestinationFiles)
         {
             UAssetImporterPrivate::IgnoreAutoReimportDelete(DestinationFile);
-            IFileManager::Get().Delete(*DestinationFile, false, true, true);
+            if (!BackupsByDestination.Contains(DestinationFile) && !IFileManager::Get().Delete(*DestinationFile, false, true, true))
+            {
+                bRollbackComplete = false;
+                Errors.Add(FString::Printf(TEXT("Rollback could not remove %s"), *DestinationFile));
+            }
         }
         for (const TPair<FString, FString>& Backup : BackupsByDestination)
         {
             FString RestoreProblem;
             if (!CopyFileVerified(Backup.Value, Backup.Key, RestoreProblem))
             {
+                bRollbackComplete = false;
                 Errors.AddUnique(FString::Printf(TEXT("Rollback could not restore '%s': %s"), *Backup.Key, *RestoreProblem));
             }
         }
         Result.ImportedCount = 0;
         Result.CopiedPackageNames.Reset();
-        IFileManager::Get().DeleteDirectory(*BackupRoot, false, true);
+        if (bRollbackComplete)
+        {
+            IFileManager::Get().DeleteDirectory(*BackupRoot, false, true);
+        }
+        else
+        {
+            Errors.Add(FString::Printf(TEXT("Rollback was incomplete. Recovery directory: %s"), *FPaths::ConvertRelativePathToFull(BackupRoot)));
+        }
     }
     else if (!Options.bRollbackOnFailure)
     {
@@ -2297,19 +2339,6 @@ FUAssetImporterResult FUAssetImporterService::Import(
     }
 
     Result.AffectedPackageNames = PackagesToSanitize;
-    if (Options.bClearImportSourceData)
-    {
-        TArray<FString> SanitizeProblems;
-        if (!SanitizeImportedPackages(PackagesToSanitize, Result.CopiedPackageNames, SanitizeProblems))
-        {
-            Errors.Append(SanitizeProblems);
-        }
-        else
-        {
-            Warnings.Append(SanitizeProblems);
-        }
-    }
-
     TArray<FString> FilesToScan = CopiedDestinationFiles;
 
     if (!FilesToScan.IsEmpty())
@@ -2940,18 +2969,13 @@ bool FUAssetImporterService::GetDestinationBasePath(
 
 TArray<FString> FUAssetImporterService::GetPackageFiles(const FString& BasePath) const
 {
-    TArray<FString> FileNames;
     TArray<FString> FullPaths;
-    const FString Directory = FPaths::GetPath(BasePath);
-    const FString BaseName = FPaths::GetCleanFilename(BasePath);
-    IFileManager::Get().FindFiles(FileNames, *FPaths::Combine(Directory, BaseName + TEXT(".*")), true, false);
-
-    for (const FString& FileName : FileNames)
+    for (const TCHAR* Suffix : {TEXT(".uasset"), TEXT(".uexp"), TEXT(".ubulk"), TEXT(".uptnl"), TEXT(".m.ubulk"), TEXT(".upayload")})
     {
-        if (FileName.Equals(BaseName + TEXT(".uasset"), ESearchCase::IgnoreCase)
-            || FileName.StartsWith(BaseName + TEXT("."), ESearchCase::IgnoreCase))
+        const FString Component = BasePath + Suffix;
+        if (FPaths::FileExists(Component))
         {
-            FullPaths.Add(FPaths::Combine(Directory, FileName));
+            FullPaths.Add(Component);
         }
     }
     FullPaths.Sort();

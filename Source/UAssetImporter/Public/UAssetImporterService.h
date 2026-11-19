@@ -95,6 +95,8 @@ public:
         TArray<TSharedPtr<FUAssetImporterAssetItem>>& OutItems,
         TArray<FString>& OutProblems);
 
+    void LoadSelectedPreviews(const TArray<TSharedPtr<FUAssetImporterAssetItem>>& Items);
+
     FUAssetImporterResult Import(
         const TArray<TSharedPtr<FUAssetImporterAssetItem>>& Items,
         const FUAssetImporterOptions& Options);

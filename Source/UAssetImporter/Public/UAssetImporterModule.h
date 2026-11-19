@@ -19,5 +19,5 @@ private:
     bool HandleExternalFileDrop(
         const FAssetViewDragAndDropExtender::FPayload& Payload);
 
-    void OpenImportDialogForFiles(const TArray<FString>& SelectedFiles);
+    void OpenImportDialogForFiles(const TArray<FString>& SelectedFiles, const FString& InitialDestinationPackagePath);
 };

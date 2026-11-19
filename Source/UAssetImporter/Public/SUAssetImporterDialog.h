@@ -51,6 +51,7 @@ private:
     TSharedRef<SWidget> MakeDependencyPlacementMenu();
     TSharedRef<ITableRow> GenerateDependencyTreeRow(FDependencyTreeNodePtr Item, const TSharedRef<STableViewBase>& OwnerTable);
     void GetDependencyTreeChildren(FDependencyTreeNodePtr Item, TArray<FDependencyTreeNodePtr>& OutChildren) const;
+    void RefreshAssetRows();
     void RebuildDependencyTree();
     void SetDependencyNodeSelection(FDependencyTreeNodePtr Item, bool bSelected);
     void SetDependencyNodeSelectionRecursive(FDependencyTreeNodePtr Item, bool bSelected);
