@@ -1,38 +1,74 @@
-# UAsset Importer (UE 5.7)
+# UAsset Importer
 
-Editor-only Unreal Engine plugin for importing external `.uasset` packages into the current project. It opens a single import dialog from **File → Import .uasset Files...** and keeps successful imports silent apart from the Output Log summary. Warnings or errors are also written to the UAsset Importer Message Log, which opens automatically when there are problems.
+Import external Unreal Engine .uasset packages into your project and choose which dependencies to bring with them.
 
-## Installation
+Open one or more assets in the Content Browser import dialog. Review their package paths and references, choose a destination for the assets and their dependencies, then import the selection. Keeping the source project's Content folder structure makes referenced packages easier to locate.
 
-1. Close Unreal Editor.
-2. Copy the `UAssetImporter` folder into `<Project>/Plugins/`.
-3. Reopen the project and enable **UAsset Importer** under Edit → Plugins if required.
-4. Compile the project Editor target.
-5. Use **File → Import .uasset Files...**.
+[Русский](README.ru.md)
 
-## Import workflow
+## Contents
 
-1. Select one or more `.uasset` files in the native file picker.
-2. Review the asset list, thumbnails, class metadata, source path, and available saved-engine-version metadata.
-3. Select which top-level assets to import and configure the import options.
-4. Start the import. Dependency packages discovered through the Asset Registry are included automatically when their source files can be resolved.
-5. On success, only a short summary is written to Output Log. No success dialog or summary window appears. When warnings or errors occur, the UAsset Importer Message Log opens automatically.
+- [Features](#features)
+- [Using the plugin](#using-the-plugin)
+- [Limitations](#limitations)
+- [Building from source](#building-from-source)
 
-## Options
+## Features
 
-- **Abort if a required dependency is missing**: on by default. Missing required dependencies stop the operation before file changes.
-- **Ignore missing soft references**: on by default. Missing soft references are logged as warnings.
-- **Overwrite existing assets**: off by default.
-- **Rollback changes on failure**: on by default. Overwritten package files are backed up for the duration of the operation.
-- **Sync selected assets in Content Browser**: on by default.
-- **Load selected assets after import**: off by default. Existing assets are not force-reloaded.
+- Review a dependency tree before copying packages. See which references are available in the source, already present in the project, or missing.
+- Preserve package paths or organize imported assets and their dependencies under a chosen folder.
+- Control replacement of existing assets and keep recovery copies during import.
 
-Option values are saved in the project's editor-per-project config, rather than exposed a second time in Editor Preferences.
+## Using the plugin
 
-## Important initial-version limits
+### Enable the plugin
 
-- Source directories are discovered by locating the nearest ancestor named `Content`. When no `Content` ancestor exists, the selected file's containing directory is treated as the root.
-- `/Game` packages preserve their relative path under the project's `Content` directory. Plugin-mounted packages require the corresponding content plugin to exist in the destination project. Importing engine-mounted content directly is blocked.
-- Dependency discovery relies on metadata that Unreal can read from the source package. Cooked, corrupt, unsupported, or newer-incompatible packages may not be readable. Packages with missing sidecar files or missing external dependencies may remain unusable.
-- This first test build exposes the native file-picker workflow. Direct Windows Explorer drag-and-drop into Content Browser is not wired up in this initial source drop; it needs a dedicated Content Browser drag/drop integration and should be added only after the core copy/rollback path has been validated.
-- The code has been prepared against UE 5.7 editor APIs but cannot be compiled in this environment because an Unreal Engine installation and project are not available here. Treat it as a test build and send back the first compiler errors from Rider/UBT if any appear.
+Open **Edit → Plugins**, search for **UAsset Importer**, enable it and restart the editor if prompted.
+
+### Select assets and dependencies
+
+1. Open the destination folder in the **Content Browser**. Drag one or more external `.uasset` files into the asset view, or click **Import** and select the files.
+2. In **Assets to Import**, select the assets you want. Use **Load selected previews** to load the selected packages and render available thumbnails.
+3. Expand **Dependencies**. Review missing references and select the source packages you want to copy. Leaving out a referenced package requires a compatible copy at the path the asset expects.
+
+### Choose where packages go
+
+**Destination** controls the selected assets. Use the current Content Browser folder, the project Content root, a custom folder, or the original package paths. **Dependency placement** lets you keep original paths, preserve the source structure inside a Dependencies folder, flatten dependencies into one folder, or place them beside the imported assets. Preserving original package paths also keeps dependencies at their original paths.
+
+### Import and check the result
+
+By default, missing required dependencies stop the import. Missing soft references can be reported as warnings. **Overwrite existing assets** is off and **Roll back copied files if import fails** is on. Enable overwrite only when you intend to replace the destination packages.
+
+Click **Import**. By default the Content Browser selects the imported assets. Loading the selected assets after import is a separate option. Check **UAsset Importer** in the Message Log for reported problems and the Output Log for the summary. If recovery is incomplete, keep the backup directory named in the error.
+
+## Limitations
+
+- Select external `.uasset` files. Maps (`.umap`) are outside this workflow.
+- Keep package sidecars beside the corresponding asset and preserve the source Content hierarchy when possible. The importer cannot recover missing source data.
+- The editor must be able to read the packages and resolve the classes they use. Cooked, corrupt or incompatible packages may fail. Install required project plugins before opening assets that depend on their classes.
+
+## Building from source
+
+### Build in a project
+
+Close the editor. From the root of a C++ project, run:
+
+```shell
+git clone https://github.com/DontFWithTheJ/UE-UAsset-Importer.git Plugins/UAssetImporter
+```
+
+Check that `Plugins/UAssetImporter/UAssetImporter.uplugin` exists. Refresh project files if your IDE requires it. Build the project's **Development Editor** target for your platform, then open the project and enable the plugin.
+
+### Package with Unreal Automation Tool
+
+On Windows, run the following in Command Prompt with paths for your installation. Choose an empty output directory outside the source tree.
+
+```bat
+"C:\UE\Engine\Build\BatchFiles\RunUAT.bat" BuildPlugin -Plugin="D:\Project\Plugins\UAssetImporter\UAssetImporter.uplugin" -Package="D:\Packages\UAssetImporter" -TargetPlatforms=Win64
+```
+
+Use the engine installation you intend to target. `-Plugin` points to the plugin descriptor, `-Package` sets the output directory, and `-TargetPlatforms` selects the target platform.
+
+### Use the packaged plugin
+
+Copy the output folder containing `UAssetImporter.uplugin` to `YourProject/Plugins/UAssetImporter/` for one project, or to `Engine/Plugins/Marketplace/UAssetImporter/` for projects using that engine installation. Enable the plugin under **Edit → Plugins**. Rebuild and check API compatibility when changing engine versions.
